@@ -9,6 +9,7 @@ import { errorHandler } from './middleware/error.middleware.js';
 import { requireJson } from './middleware/validate.middleware.js';
 import { generalLimiter } from './middleware/rateLimit.middleware.js';
 import { requireApiKey } from './middleware/auth.middleware.js';
+import { image } from './controllers/game.controller.js';
 
 const app = express();
 
@@ -34,6 +35,11 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(requireJson);
 app.use(generalLimiter);
+
+// Proxy de imágenes: lo carga un <img>, que no puede enviar X-API-Key, así que
+// va ANTES de requireApiKey. Su seguridad la aporta la firma HMAC de la URL.
+app.get('/api/game/image', image);
+
 app.use(requireApiKey);
 
 // ── Rutas ──────────────────────────────────────────────────────────────────────

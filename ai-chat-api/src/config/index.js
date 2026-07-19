@@ -36,7 +36,8 @@ export const config = {
 
 	rateLimit: {
 		/** Ventana de tiempo en ms para contar peticiones */
-		windowMs: parseInt(getEnv('RATE_LIMIT_WINDOW_MINUTES', '10'), 10) * 60 * 1000,
+		windowMs:
+			parseInt(getEnv('RATE_LIMIT_WINDOW_MINUTES', '10'), 10) * 60 * 1000,
 		/** Máximo de peticiones por IP en la ventana (rutas generales) */
 		max: parseInt(getEnv('RATE_LIMIT_MAX', '60'), 10),
 		/** Máximo de peticiones por IP en la ventana (rutas de juego) */
@@ -59,7 +60,10 @@ export const config = {
 		 * Ejemplo producción: "https://mifrontend.com"
 		 * Ejemplo local:      "http://localhost:5173,http://localhost:5174"
 		 */
-		allowedOrigins: getEnv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174')
+		allowedOrigins: getEnv(
+			'ALLOWED_ORIGINS',
+			'http://localhost:5173,http://localhost:5174',
+		)
 			.split(',')
 			.map((o) => o.trim())
 			.filter(Boolean),
@@ -71,14 +75,38 @@ export const config = {
 		 * Se intentan en secuencia; si uno falla por cuota/rate-limit se prueba el siguiente.
 		 * Configurable vía GAME_MODELS (CSV). Ej: "modelA:free,modelB:free"
 		 */
-		models: getEnv('GAME_MODELS', 'openai/gpt-oss-120b:free,z-ai/glm-4.5-air:free,poolside/laguna-m.1:free,minimax/minimax-m2.5:free')
+		models: getEnv(
+			'GAME_MODELS',
+			'openai/gpt-oss-120b:free,z-ai/glm-4.5-air:free,poolside/laguna-m.1:free,minimax/minimax-m2.5:free',
+		)
 			.split(',')
 			.map((m) => m.trim())
 			.filter(Boolean),
 		/** Base URL de Pollinations.ai para generación de imágenes */
 		imageBaseUrl: 'https://image.pollinations.ai/prompt',
+		/** Modelo de imagen de Pollinations.ai (flux, turbo, sana...) */
+		imageModel: getEnv('GAME_IMAGE_MODEL', 'flux'),
 		/** Dimensiones de imagen para el juego */
 		imageWidth: parseInt(getEnv('GAME_IMAGE_WIDTH', '512'), 10),
 		imageHeight: parseInt(getEnv('GAME_IMAGE_HEIGHT', '512'), 10),
+		/**
+		 * Token de Pollinations.ai (tier "seed" gratuito).
+		 * Se obtiene registrándose en https://auth.pollinations.ai
+		 * Se envía como cabecera Authorization: Bearer desde el backend,
+		 * NUNCA se expone al frontend (por eso el proxy /api/game/image).
+		 */
+		imageToken: getEnv('POLLINATIONS_TOKEN', ''),
+		/**
+		 * Secreto para firmar (HMAC) las URLs del proxy de imágenes.
+		 * Evita que terceros usen tu token para generar imágenes arbitrarias:
+		 * solo se sirven URLs firmadas por este mismo backend.
+		 * En producción define un valor largo y aleatorio.
+		 */
+		imageProxySecret: getEnv('IMAGE_PROXY_SECRET', 'dev-insecure-secret-change-me'),
+		/**
+		 * URL pública base de ESTA API (sin barra final). El frontend carga las
+		 * imágenes desde aquí. En local vale el default; en producción pon la URL real.
+		 */
+		publicBaseUrl: getEnv('PUBLIC_BASE_URL', `http://localhost:${getEnv('PORT', '3000')}`),
 	},
 };

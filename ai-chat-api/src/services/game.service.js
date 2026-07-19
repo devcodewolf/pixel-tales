@@ -1,29 +1,122 @@
 /**
  * Servicio del juego de aventura gráfica.
  * Usa OpenRouter para generar la narrativa del master de rol y
- * Pollinations.ai para generar imágenes estilo pixel art sin necesidad de API key.
+ * Pollinations.ai para generar imágenes estilo pixel art.
+ *
+ * Pollinations pasó a requerir autenticación (Bearer token). Como un <img> no
+ * puede enviar cabeceras, el backend actúa de proxy: buildImageUrl() devuelve una
+ * URL firmada a /api/game/image, y fetchSceneImage() la resuelve contra Pollinations
+ * añadiendo el token. Así el token nunca llega al navegador.
  */
 
+import crypto from 'node:crypto';
 import { config } from '../config/index.js';
 
 /** @typedef {{ role: 'system'|'user'|'assistant', content: string }} Message */
 
 /**
- * Genera la URL de imagen pixel art usando Pollinations.ai.
+ * Aplica el estilo pixel art y trunca el prompt para no generar URLs enormes.
+ * @param {string} imagePrompt
+ * @returns {string}
+ */
+function stylizePrompt(imagePrompt) {
+	const trimmed = imagePrompt.slice(0, 180);
+	return `${trimmed}, pixel art, 16-bit retro game, dramatic lighting, detailed`;
+}
+
+/**
+ * Cabeceras de autenticación para Pollinations (vacías si no hay token).
+ * @returns {Record<string, string>}
+ */
+function pollinationsHeaders() {
+	const { imageToken } = config.game;
+	return imageToken ? { Authorization: `Bearer ${imageToken}` } : {};
+}
+
+/**
+ * Firma (HMAC-SHA256) el par prompt+seed para que solo las URLs generadas por
+ * este backend sean aceptadas por el proxy de imágenes.
+ * @param {string} styledPrompt
+ * @param {number|string} seed
+ * @returns {string} firma hex (32 chars)
+ */
+function signImage(styledPrompt, seed) {
+	return crypto
+		.createHmac('sha256', config.game.imageProxySecret)
+		.update(`${styledPrompt}|${seed}`)
+		.digest('hex')
+		.slice(0, 32);
+}
+
+/**
+ * Construye la URL directa a Pollinations (uso interno del backend).
+ * @param {string} styledPrompt
+ * @param {number|string} seed
+ * @returns {string}
+ */
+function buildPollinationsUrl(styledPrompt, seed) {
+	const { imageBaseUrl, imageWidth, imageHeight, imageModel } = config.game;
+	const encoded = encodeURIComponent(styledPrompt);
+	return `${imageBaseUrl}/${encoded}?width=${imageWidth}&height=${imageHeight}&model=${imageModel}&nologo=true&seed=${seed}`;
+}
+
+/**
+ * Genera la URL de imagen que consumirá el frontend. Apunta al proxy de esta
+ * misma API (/api/game/image), va firmada, y NO contiene el token de Pollinations.
  *
  * @param {string} imagePrompt - Descripción de la escena en inglés
- * @returns {string} URL de imagen lista para usar en <img>
+ * @returns {string} URL lista para usar en <img>
  */
 function buildImageUrl(imagePrompt) {
-	const { imageBaseUrl, imageWidth, imageHeight } = config.game;
-
-	// Truncar a 180 chars para evitar URLs demasiado largas
-	const trimmed = imagePrompt.slice(0, 180);
-	const styledPrompt = `${trimmed}, pixel art, 16-bit retro game, dramatic lighting, detailed`;
-	const encoded = encodeURIComponent(styledPrompt);
+	const { publicBaseUrl } = config.game;
+	const styledPrompt = stylizePrompt(imagePrompt);
 	const seed = Math.floor(Math.random() * 99999);
 
-	return `${imageBaseUrl}/${encoded}?width=${imageWidth}&height=${imageHeight}&nologo=true&seed=${seed}`;
+	// Fire-and-forget: pre-calienta la generación en Pollinations con el token,
+	// para que cuando el <img> llame al proxy la imagen ya esté cacheada upstream.
+	fetch(buildPollinationsUrl(styledPrompt, seed), {
+		headers: pollinationsHeaders(),
+		signal: AbortSignal.timeout(40000),
+	}).catch(() => {});
+
+	const params = new URLSearchParams({
+		prompt: styledPrompt,
+		seed: String(seed),
+		sig: signImage(styledPrompt, seed),
+	});
+	return `${publicBaseUrl}/api/game/image?${params.toString()}`;
+}
+
+/**
+ * Resuelve una petición del proxy de imágenes: valida la firma y descarga la
+ * imagen desde Pollinations usando el token del backend.
+ *
+ * @param {{ prompt?: string, seed?: string, sig?: string }} query
+ * @returns {Promise<Response>} respuesta fetch de Pollinations
+ */
+export async function fetchSceneImage({ prompt, seed, sig }) {
+	if (!prompt || !seed || !sig) {
+		const err = new Error('Parámetros de imagen incompletos.');
+		err.statusCode = 400;
+		throw err;
+	}
+
+	const expected = signImage(prompt, seed);
+	const provided = Buffer.from(String(sig));
+	const valid =
+		provided.length === expected.length &&
+		crypto.timingSafeEqual(provided, Buffer.from(expected));
+
+	if (!valid) {
+		const err = new Error('Firma de imagen inválida.');
+		err.statusCode = 403;
+		throw err;
+	}
+
+	return fetch(buildPollinationsUrl(prompt, seed), {
+		headers: pollinationsHeaders(),
+		signal: AbortSignal.timeout(60000),
+	});
 }
 
 /**
@@ -37,7 +130,15 @@ function buildImageUrl(imagePrompt) {
 function isQuotaError(status, message) {
 	if (status === 429 || status === 503 || status === 529) return true;
 	const lower = message.toLowerCase();
-	return lower.includes('rate limit') || lower.includes('quota') || lower.includes('capacity') || lower.includes('overloaded') || lower.includes('no endpoints') || lower.includes('context length') || lower.includes('model not found');
+	return (
+		lower.includes('rate limit') ||
+		lower.includes('quota') ||
+		lower.includes('capacity') ||
+		lower.includes('overloaded') ||
+		lower.includes('no endpoints') ||
+		lower.includes('context length') ||
+		lower.includes('model not found')
+	);
 }
 
 /**
@@ -89,7 +190,9 @@ async function callGameMaster(messages) {
 		if (!response.ok) {
 			const message = data?.error?.message ?? `HTTP ${response.status}`;
 			if (isQuotaError(response.status, message)) {
-				console.warn(`[game] Modelo ${model} agotado (${response.status}): ${message}. Probando siguiente...`);
+				console.warn(
+					`[game] Modelo ${model} agotado (${response.status}): ${message}. Probando siguiente...`,
+				);
 				errors.push(new Error(`${model}: ${message}`));
 				continue; // siguiente modelo
 			}
@@ -102,17 +205,23 @@ async function callGameMaster(messages) {
 		try {
 			parsed = JSON.parse(rawContent);
 		} catch {
-			const jsonMatch = rawContent.match(/```(?:json)?\s*([\s\S]*?)```/) ?? rawContent.match(/({[\s\S]*})/m);
+			const jsonMatch =
+				rawContent.match(/```(?:json)?\s*([\s\S]*?)```/) ??
+				rawContent.match(/({[\s\S]*})/m);
 			if (!jsonMatch) {
 				// JSON inválido: intentamos con el siguiente modelo
-				console.warn(`[game] Modelo ${model} devolvió JSON inválido. Probando siguiente...`);
+				console.warn(
+					`[game] Modelo ${model} devolvió JSON inválido. Probando siguiente...`,
+				);
 				errors.push(new Error(`${model}: JSON inválido`));
 				continue;
 			}
 			try {
 				parsed = JSON.parse(jsonMatch[1]);
 			} catch {
-				console.warn(`[game] Modelo ${model} devolvió JSON inválido (fallback). Probando siguiente...`);
+				console.warn(
+					`[game] Modelo ${model} devolvió JSON inválido (fallback). Probando siguiente...`,
+				);
 				errors.push(new Error(`${model}: JSON inválido`));
 				continue;
 			}
@@ -120,9 +229,6 @@ async function callGameMaster(messages) {
 
 		console.info(`[game] Usando modelo: ${model}`);
 		const imageUrl = buildImageUrl(parsed.imagePrompt);
-
-		// Fire-and-forget: pre-calienta la generación de imagen en Pollinations
-		fetch(imageUrl, { signal: AbortSignal.timeout(40000) }).catch(() => {});
 
 		return {
 			story: parsed.story,
@@ -133,7 +239,9 @@ async function callGameMaster(messages) {
 	}
 
 	// Todos los modelos fallaron
-	throw new Error(`Todos los modelos están agotados. Intentos: ${errors.map((e) => e.message).join(' | ')}`);
+	throw new Error(
+		`Todos los modelos están agotados. Intentos: ${errors.map((e) => e.message).join(' | ')}`,
+	);
 }
 
 /**
@@ -195,7 +303,14 @@ export async function startGame(theme) {
 	const history = [
 		{ role: 'system', content: systemPrompt },
 		{ role: 'user', content: messages[1].content },
-		{ role: 'assistant', content: JSON.stringify({ story: result.story, imagePrompt: result.imagePrompt, question: result.question }) },
+		{
+			role: 'assistant',
+			content: JSON.stringify({
+				story: result.story,
+				imagePrompt: result.imagePrompt,
+				question: result.question,
+			}),
+		},
 	];
 
 	return { ...result, history };
@@ -209,7 +324,11 @@ export async function startGame(theme) {
  * @returns {Promise<{ story: string, imageUrl: string, question: string, history: Message[] }>}
  */
 export async function continueGame(playerAction, history) {
-	if (!playerAction || typeof playerAction !== 'string' || playerAction.trim() === '') {
+	if (
+		!playerAction ||
+		typeof playerAction !== 'string' ||
+		playerAction.trim() === ''
+	) {
 		throw new Error('La acción del jugador no puede estar vacía.');
 	}
 
@@ -217,11 +336,24 @@ export async function continueGame(playerAction, history) {
 		throw new Error('El historial de la partida no es válido.');
 	}
 
-	const updatedHistory = [...history, { role: 'user', content: playerAction.trim() }];
+	const updatedHistory = [
+		...history,
+		{ role: 'user', content: playerAction.trim() },
+	];
 
 	const result = await callGameMaster(updatedHistory);
 
-	const newHistory = [...updatedHistory, { role: 'assistant', content: JSON.stringify({ story: result.story, imagePrompt: result.imagePrompt, question: result.question }) }];
+	const newHistory = [
+		...updatedHistory,
+		{
+			role: 'assistant',
+			content: JSON.stringify({
+				story: result.story,
+				imagePrompt: result.imagePrompt,
+				question: result.question,
+			}),
+		},
+	];
 
 	return { ...result, history: newHistory };
 }
