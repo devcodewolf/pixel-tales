@@ -1,0 +1,136 @@
+### ai-chat-api - Colección de pruebas
+### Requiere la extensión REST Client para VS Code (humao.rest-client)
+### https://marketplace.visualstudio.com/items?itemName=humao.rest-client
+
+@baseUrl = http://localhost:3000
+@contentType = application/json
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. Health check
+# ══════════════════════════════════════════════════════════════════════════════
+
+### GET - Salud del servidor
+GET {{baseUrl}}/api/health
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. Estado de proveedores
+# ══════════════════════════════════════════════════════════════════════════════
+
+### GET - Ver disponibilidad de todos los proveedores
+GET {{baseUrl}}/api/chat/providers
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. Chat - Mensaje simple
+# ══════════════════════════════════════════════════════════════════════════════
+
+### POST - Enviar un mensaje sencillo al modelo activo
+POST {{baseUrl}}/api/chat
+Content-Type: {{contentType}}
+
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hola, ¿cual es la capital de francia?"
+    }
+  ]
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. Chat - Conversación con contexto
+# ══════════════════════════════════════════════════════════════════════════════
+
+### POST - Conversación con mensaje de sistema y varios turnos
+POST {{baseUrl}}/api/chat
+Content-Type: {{contentType}}
+
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "Eres un asistente experto en programación. Responde siempre en español y de forma concisa."
+    },
+    {
+      "role": "user",
+      "content": "¿Qué es JavaScript?"
+    }
+  ],
+  "options": {
+    "maxTokens": 512,
+    "temperature": 0.5
+  }
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Chat - Opciones personalizadas
+# ══════════════════════════════════════════════════════════════════════════════
+
+### POST - Respuesta larga con temperatura alta (más creativo)
+POST {{baseUrl}}/api/chat
+Content-Type: {{contentType}}
+
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Escribe un poema corto sobre la programación."
+    }
+  ],
+  "options": {
+    "maxTokens": 256,
+    "temperature": 0.9
+  }
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Validación de errores
+# ══════════════════════════════════════════════════════════════════════════════
+
+### POST - Error: array de mensajes vacío
+POST {{baseUrl}}/api/chat
+Content-Type: {{contentType}}
+
+{
+  "messages": []
+}
+
+### POST - Error: rol inválido
+POST {{baseUrl}}/api/chat
+Content-Type: {{contentType}}
+
+{
+  "messages": [
+    {
+      "role": "admin",
+      "content": "Mensaje con rol incorrecto"
+    }
+  ]
+}
+
+### POST - Error: content-type incorrecto (debe devolver 415)
+POST {{baseUrl}}/api/chat
+Content-Type: text/plain
+
+Esto no es JSON
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. Gestión de proveedores
+# ══════════════════════════════════════════════════════════════════════════════
+
+### POST - Rehabilitar el proveedor openrouter manualmente
+POST {{baseUrl}}/api/chat/providers/openrouter/reset
+Content-Type: {{contentType}}
+
+### POST - Rehabilitar el proveedor groq manualmente
+POST {{baseUrl}}/api/chat/providers/groq/reset
+Content-Type: {{contentType}}
+
+### POST - Intentar rehabilitar un proveedor inexistente (debe devolver 404)
+POST {{baseUrl}}/api/chat/providers/fakeprovider/reset
+Content-Type: {{contentType}}
